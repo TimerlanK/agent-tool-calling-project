@@ -124,6 +124,8 @@ class MovieAgent:
 
         try:
             result = tool.invoke(tool_args)
+            if isinstance(result, str):
+                return result
             return json.dumps(result, ensure_ascii=False, default=str)
         except Exception as exc:  # noqa: BLE001 - tool errors should be shown to the agent.
             return f"Tool error from {tool_name}: {exc}"

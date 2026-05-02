@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-import httpx
+import requests
 
 
 OMDB_BASE_URL = "http://www.omdbapi.com/"
@@ -15,13 +15,18 @@ class OmdbError(RuntimeError):
 
 
 def _request(api_key: str, params: dict[str, Any]) -> dict[str, Any]:
-    response = httpx.get(
-        OMDB_BASE_URL,
-        params={"apikey": api_key, **params},
-        timeout=12,
-    )
-    response.raise_for_status()
-    data = response.json()
+    try:
+        response = requests.get(
+            OMDB_BASE_URL,
+            params={"apikey": api_key, **params},
+            timeout=12,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except requests.RequestException as exc:
+        raise OmdbError(f"Network error while calling OMDb: {exc}") from exc
+    except ValueError as exc:
+        raise OmdbError("OMDb returned invalid JSON.") from exc
 
     if data.get("Response") == "False":
         raise OmdbError(data.get("Error", "OMDb request failed."))
