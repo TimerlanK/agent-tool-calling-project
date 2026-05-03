@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 
 from kinomaniac.agent import create_movie_agent, print_dialog
 
@@ -21,7 +22,9 @@ def main() -> None:
     agent = create_movie_agent()
 
     if args.question:
-        print(agent.ask(" ".join(args.question)))
+        answer, elapsed_seconds = ask_with_timing(agent, " ".join(args.question))
+        print(answer)
+        print_execution_time(elapsed_seconds)
         if args.trace:
             print_tool_trace(agent.last_tool_calls)
         if args.memory:
@@ -37,13 +40,25 @@ def main() -> None:
             break
         if not user_input:
             continue
-        print(f"\nКиноманьяк: {agent.ask(user_input)}")
+        answer, elapsed_seconds = ask_with_timing(agent, user_input)
+        print(f"\nКиноманьяк: {answer}")
+        print_execution_time(elapsed_seconds)
         if args.trace:
             print_tool_trace(agent.last_tool_calls)
         if args.memory:
             print_dialog(agent.summary, agent.recent_messages)
         print_turn_separator(turn_number)
         turn_number += 1
+
+
+def ask_with_timing(agent, question: str) -> tuple[str, float]:
+    start_time = time.perf_counter()
+    answer = agent.ask(question)
+    return answer, time.perf_counter() - start_time
+
+
+def print_execution_time(elapsed_seconds: float) -> None:
+    print(f"\nВремя выполнения: {elapsed_seconds:.2f} сек.")
 
 
 def print_tool_trace(tool_calls: list[dict]) -> None:
