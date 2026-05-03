@@ -1,34 +1,38 @@
-# Киноманьяк: AI movie agent
+# Kinomaniac: AI Movie Agent
 
-Локальный AI-агент эксперт по фильмам на **Ollama + LangChain LCEL + bind_tools**.
-Данные о фильмах агент проверяет через OMDb API.
+Kinomaniac is a local AI movie expert built with **Ollama + LangChain LCEL + bind_tools**.
+The agent verifies movie facts through the OMDb API.
 
-## Возможности
+## Features
 
-- Поиск фильма по названию.
-- Поиск списка фильмов.
-- Сравнение двух фильмов.
-- Фильтрация по жанру.
-- Поиск фильмов выше заданного IMDb рейтинга.
-- Multi-tool calling: агент может вызывать 2, 3 и больше инструментов в одном запросе.
-- Tools созданы через `@tool`, используют `requests`, обрабатывают ошибки через `try-except` и возвращают читаемые строки.
+- Search one movie by title.
+- Search a list of movies.
+- Compare two movies.
+- Filter movies by genre.
+- Find movies above a minimum IMDb rating.
+- Multi-tool calling: the agent can call 2, 3, or more tools for one user request.
+- Tools are created with `@tool`, use `requests`, handle errors with `try-except`, and return readable strings.
+- Manual summary buffer memory: old conversation is compressed into a summary while recent messages stay fully available.
 
-## Установка
+## Setup
 
-1. Установите Ollama: <https://ollama.com/>
-2. Скачайте модель с tool/function calling:
+1. Install Ollama: <https://ollama.com/>
+
+2. Pull a local model with tool/function calling support:
 
 ```bash
 ollama pull qwen2.5:7b-instruct
 ```
 
-3. Создайте окружение и установите зависимости:
+3. Create a virtual environment and install dependencies:
 
-На Ubuntu/Debian может понадобиться:
+On Ubuntu/Debian you may need:
 
 ```bash
 sudo apt install python3-venv python3-pip
 ```
+
+Then run:
 
 ```bash
 python3 -m venv .venv
@@ -36,72 +40,118 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-4. Получите ключ OMDb на <http://www.omdbapi.com/apikey.aspx>.
+4. Get an OMDb API key from <http://www.omdbapi.com/apikey.aspx>.
 
-5. Создайте `.env`:
+5. Create `.env`:
 
 ```bash
 cp .env.example .env
 ```
 
-Заполните:
+Fill it:
 
 ```bash
 OMDB_API_KEY=your_omdb_api_key
 OLLAMA_MODEL=qwen2.5:7b-instruct
 OLLAMA_BASE_URL=http://localhost:11434
+MEMORY_MAX_WORD_LIMIT=120
+MEMORY_KEEP_LAST_MESSAGES=4
 ```
 
-## Запуск
+## Run
 
-Интерактивный режим:
+Interactive mode:
 
 ```bash
 PYTHONPATH=src python3 -m kinomaniac.cli
 ```
 
-Один вопрос:
+One question:
 
 ```bash
-PYTHONPATH=src python3 -m kinomaniac.cli "Сравни рейтинги Matrix и Inception"
+PYTHONPATH=src python3 -m kinomaniac.cli "Compare the IMDb ratings of Matrix and Inception."
 ```
 
-С выводом вызванных tools:
+Show called tools:
 
 ```bash
-PYTHONPATH=src python3 -m kinomaniac.cli --trace "Сравни рейтинги Matrix и Inception"
+PYTHONPATH=src python3 -m kinomaniac.cli --trace "Compare the IMDb ratings of Matrix and Inception."
 ```
 
-## Примеры multi-tool запросов
+Show current memory:
+
+```bash
+PYTHONPATH=src python3 -m kinomaniac.cli --memory
+```
+
+Check tools and memory together:
+
+```bash
+PYTHONPATH=src python3 -m kinomaniac.cli --trace --memory
+```
+
+First send a memory-only message:
 
 ```text
-Сравни рейтинги Matrix и Inception
+My name is Timur. I love science fiction and Christopher Nolan movies.
 ```
 
-Ожидаемо: агент вызывает инструмент сравнения или получает данные по обоим фильмам, затем сравнивает.
+Then ask a multi-tool question:
 
 ```text
-Найди фильмы Batman, оставь только триллеры и покажи лучшие по IMDb рейтингу
+Compare the IMDb ratings of Matrix and Inception and recommend which one fits my taste better.
 ```
 
-Ожидаемо: агент ищет список, получает детали, фильтрует по жанру и рейтингу.
+## Multi-Tool Examples
 
 ```text
-Что лучше посмотреть вечером: комедию или триллер? Дай варианты с рейтингом выше 7.5
+Compare the IMDb ratings of Matrix and Inception.
 ```
 
-Ожидаемо: агент делает несколько поисков/фильтраций и дает рекомендацию.
+Expected behavior: the agent calls the comparison tool or fetches details for both movies, then compares them.
 
-## Архитектура
+```text
+Find Batman movies, keep only thrillers, and show the best ones by IMDb rating.
+```
 
-Ключевая часть находится в `src/kinomaniac/agent.py`:
+Expected behavior: the agent searches a list, fetches details, filters by genre, and compares ratings.
+
+```text
+What is better for tonight: comedy or thriller? Give options with IMDb rating above 7.5.
+```
+
+Expected behavior: the agent performs multiple searches/filtering steps and gives a recommendation.
+
+## Architecture
+
+The key LCEL part is in `src/kinomaniac/agent.py`:
 
 ```python
+intent_chain = intent_prompt | llm
 llm_with_tools = llm.bind_tools(tools)
-chain = prompt | llm_with_tools
+chain = chat_prompt | llm_with_tools
+summary_chain = summary_prompt | llm
 ```
 
-Системный prompt строгий: он описывает роль агента, правила проверки фактов, forced tool usage для сравнений, списков, рейтингов и запросов по конкретным фильмам.
-Для Ollama `tool_choice` не используется как надежный механизм принуждения, поэтому в коде есть строгая policy-подсказка и retry guard для запросов, где инструмент обязателен.
+The agent first uses `intent_chain` as a small LLM router. It returns exactly one label:
 
-Инструменты описаны в `src/kinomaniac/tools.py`, а низкоуровневый OMDb клиент в `src/kinomaniac/omdb.py`.
+- `MEMORY_ONLY`: remember the input without tool calls.
+- `TOOL_NEEDED`: call OMDb tools before answering.
+- `GENERAL_CHAT`: answer without tools for general movie discussion.
+
+The system prompt is strict. It defines the agent role, fact-checking rules, forced tool usage for comparisons/lists/ratings/specific movie questions, and a no-tool path for memory-only user statements. The decision is made by the LLM router, not by hardcoded keyword matching.
+
+For Ollama, `tool_choice` is not used as a reliable forcing mechanism. Instead, the code uses a strict tool policy hint and a retry guard when a tool is required.
+
+Memory is implemented manually with a summary buffer pattern:
+
+- `summary`: short compressed text for older conversation.
+- `recent_messages`: the latest messages stored fully as `HumanMessage` and `AIMessage`.
+- `chat_prompt`: system message with `{summary}`, `MessagesPlaceholder("recent_messages")`, and human message with `{input}`.
+- `summary_prompt`: receives the old summary and `messages_to_summarize`, then returns an updated short summary.
+- The summary preserves user name, preferences, favorite movies/genres, important facts, recent requests, and other useful context.
+- `MEMORY_MAX_WORD_LIMIT` controls when compression happens.
+- `MEMORY_KEEP_LAST_MESSAGES` controls how many latest messages stay fully available.
+
+Tools are in `src/kinomaniac/tools.py`.
+The low-level OMDb client is in `src/kinomaniac/omdb.py`.

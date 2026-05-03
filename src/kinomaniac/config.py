@@ -18,6 +18,8 @@ class Settings:
     ollama_base_url: str = "http://localhost:11434"
     temperature: float = 0.2
     max_tool_rounds: int = 5
+    memory_max_word_limit: int = 120
+    memory_keep_last_messages: int = 4
 
 
 def get_settings() -> Settings:
@@ -35,4 +37,6 @@ def get_settings() -> Settings:
         ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
         temperature=float(os.getenv("OLLAMA_TEMPERATURE", "0.2")),
         max_tool_rounds=int(os.getenv("MAX_TOOL_ROUNDS", "5")),
+        memory_max_word_limit=int(os.getenv("MEMORY_MAX_WORD_LIMIT", "120")),
+        memory_keep_last_messages=int(os.getenv("MEMORY_KEEP_LAST_MESSAGES", "4")),
     )
