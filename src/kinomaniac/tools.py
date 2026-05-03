@@ -29,6 +29,8 @@ def _comma_list(text: str | None) -> list[str]:
 
 
 def _movie_to_text(movie: dict) -> str:
+    """Convert one OMDb movie dictionary into text the LLM can read easily."""
+
     ratings = movie.get("Ratings", [])
     ratings_text = ""
     if ratings:
@@ -51,6 +53,8 @@ def _movie_to_text(movie: dict) -> str:
 
 
 def _movie_list_to_text(result: dict) -> str:
+    """Convert OMDb search results into a numbered list with IMDb IDs."""
+
     movies = result.get("results", [])
     if not movies:
         return f"No movies found for query: {result.get('query', 'unknown')}"
@@ -85,6 +89,8 @@ def _candidate_title_and_year(candidate_title: str) -> tuple[str, str | None]:
 
 
 def _split_movie_blocks(movie_details: str) -> list[str]:
+    """Split many movie cards back into separate text blocks."""
+
     blocks = [block.strip() for block in movie_details.split("--- MOVIE ---")]
     return [block for block in blocks if block]
 
@@ -131,7 +137,12 @@ def _imdb_rating_from_movie(movie: dict) -> float:
 
 
 def build_movie_tools(api_key: str):
-    """Create OMDb-backed tools with clear descriptions for the LLM."""
+    """Create OMDb-backed tools with clear descriptions for the LLM.
+
+    A LangChain tool is a normal Python function wrapped with `@tool`.
+    The LLM sees the function name, description, and argument descriptions.
+    It can then ask our code to run the function when it needs real data.
+    """
 
     @tool
     def search_movie_by_title(
@@ -150,6 +161,8 @@ def build_movie_tools(api_key: str):
             A readable text summary with title, year, genre, director, actors, plot, awards, and IMDb rating.
         """
 
+        # The tool catches OMDb errors and returns text instead of crashing.
+        # That lets the LLM explain the problem to the user.
         try:
             movie = get_movie_by_title(api_key, title=title, year=year, full_plot=full_plot)
             return _movie_to_text(movie)
@@ -175,6 +188,7 @@ def build_movie_tools(api_key: str):
             A readable numbered list of matching titles with years, types, and IMDb IDs.
         """
 
+        # First step for franchise/list queries. This gives IDs, not full cards.
         try:
             result = search_movies(api_key, query=query, year=year, movie_type=movie_type, page=page)
             return _movie_list_to_text(result)
@@ -196,6 +210,7 @@ def build_movie_tools(api_key: str):
             A readable text summary with title, year, genre, director, actors, plot, awards, and IMDb rating.
         """
 
+        # Useful after search_movie_list, because an IMDb ID identifies one exact movie.
         try:
             movie = get_movie_by_imdb_id(api_key, imdb_id=imdb_id, full_plot=full_plot)
             return _movie_to_text(movie)
@@ -246,6 +261,8 @@ def build_movie_tools(api_key: str):
             A readable report with the OMDb limitation notice, verified cards, and excluded titles.
         """
 
+        # OMDb cannot search "all Leonardo DiCaprio movies" or "top comedy movies".
+        # So the LLM suggests candidate titles, then this tool verifies each one.
         titles = _split_candidate_titles(candidate_titles)
         if not titles:
             return "No candidate movie titles were provided for OMDb verification."
@@ -259,6 +276,7 @@ def build_movie_tools(api_key: str):
         verified_movies = []
         excluded = []
         for candidate_title in titles[:limit]:
+            # If candidate is "Inception (2010)", split it into title + year.
             title, year = _candidate_title_and_year(candidate_title)
             try:
                 movie = get_movie_by_title(api_key, title=title, year=year)
@@ -267,6 +285,7 @@ def build_movie_tools(api_key: str):
                 continue
 
             if not _person_matches_movie(movie, person_names, fields):
+                # Strict check: if the requested actor/director is absent, exclude it.
                 checked_fields = ", ".join(fields)
                 excluded.append(
                     f"- {candidate_title}: title found, but {person_names!r} was not found in OMDb {checked_fields}."
@@ -274,6 +293,7 @@ def build_movie_tools(api_key: str):
                 continue
 
             if not _movie_matches_genres(movie, required_genres):
+                # Strict check: if OMDb Genre does not contain the genre, exclude it.
                 movie_genres = movie.get("Genre", "Unknown")
                 excluded.append(
                     f"- {candidate_title}: title found, but OMDb Genre '{movie_genres}' does not match required genres {required_genres!r}."
@@ -326,6 +346,7 @@ def build_movie_tools(api_key: str):
             Readable movie detail cards separated by --- MOVIE ---.
         """
 
+        # Batch tool = fewer LLM/tool rounds. It fetches many full cards at once.
         ids = _comma_list(imdb_ids)
         if not ids:
             return "No IMDb IDs were provided."
@@ -356,6 +377,7 @@ def build_movie_tools(api_key: str):
             Only the movie cards that match the genre, or a readable no-match message.
         """
 
+        # This filter is deliberately strict: it only trusts the OMDb Genre field.
         matches = []
         for block in _split_movie_blocks(movie_details):
             genres = _field_from_block(block, "Genre").lower()
@@ -382,6 +404,7 @@ def build_movie_tools(api_key: str):
             Only the movie cards that pass the rating filter, or a readable no-match message.
         """
 
+        # Ratings arrive as text, so helper _imdb_rating_from_block converts to float.
         matches = []
         for block in _split_movie_blocks(movie_details):
             if _imdb_rating_from_block(block) >= min_imdb_rating:
@@ -407,6 +430,7 @@ def build_movie_tools(api_key: str):
             Movie detail cards sorted by IMDb rating.
         """
 
+        # Sorting is separate so the trace clearly shows the multi-tool pipeline.
         blocks = _split_movie_blocks(movie_details)
         if not blocks:
             return "No movie details were provided for sorting."

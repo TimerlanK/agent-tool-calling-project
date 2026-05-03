@@ -98,6 +98,8 @@ OMDb не выдает топ фильмов по жанру напрямую: �
 """.strip()
 
 
+# This prompt is used only when memory becomes too large.
+# It asks the LLM to compress older messages into a short summary.
 SUMMARY_PROMPT = """
 Ты обновляешь короткую память AI-агента «Киноманьяк».
 
@@ -124,6 +126,10 @@ SUMMARY_PROMPT = """
 """.strip()
 
 
+# This prompt is a small "router". Before the main answer, the LLM chooses:
+# - remember only;
+# - use movie tools;
+# - answer as normal chat.
 INTENT_PROMPT = """
 Ты роутер-классификатор для AI-агента «Киноманьяк».
 
@@ -193,7 +199,10 @@ def run_summary_buffer_memory(
     Это ручная реализация summary-buffer memory для учебных целей.
     """
 
-    # Если recent buffer все еще маленький, ничего не сжимаем.
+    # Summary-buffer memory means:
+    # 1. keep recent messages exactly;
+    # 2. summarize older messages when the buffer gets too big.
+    # This gives the agent memory without sending the whole chat forever.
     if count_words(messages) <= max_word_limit:
         return summary, messages
 
@@ -233,7 +242,13 @@ def print_dialog(summary: str, recent_messages: list[BaseMessage]) -> None:
 
 @dataclass
 class MovieAgent:
-    """Movie assistant с ручной summary-buffer memory."""
+    """Movie assistant с ручной summary-buffer memory.
+
+    The MovieAgent object is the "agent brain":
+    - it sends prompts to the LLM;
+    - it executes tools requested by the LLM;
+    - it saves memory after each answer.
+    """
 
     settings: Settings
     chain: Runnable
@@ -248,7 +263,12 @@ class MovieAgent:
     def ask(self, user_input: str) -> str:
         """Задает агенту вопрос и возвращает финальный ответ."""
 
+        # Scratchpad stores temporary work for this one user question.
+        # Example: AI asks for a tool, tool returns data, AI sees that data next round.
         scratchpad: list[BaseMessage] = []
+
+        # First classify the message. This avoids calling OMDb when the user only says:
+        # "My name is Timur" or "I like sci-fi".
         intent = self._classify_intent(user_input)
         tool_policy_hint = self._tool_policy_hint(intent)
         force_retry_used = False
@@ -260,14 +280,18 @@ class MovieAgent:
         # без вызова movie tools.
         if intent == "MEMORY_ONLY":
             final_answer = f"Запомню это: {user_input}"
+            final_answer = self._add_action_explanation(final_answer, intent)
             self._save_turn(user_input, final_answer)
             return final_answer
 
         for _ in range(self.settings.max_tool_rounds):
+            # One loop round is: ask LLM -> maybe run tools -> ask LLM again.
             response = self._ask_llm(user_input, tool_policy_hint, scratchpad)
 
             tool_calls = getattr(response, "tool_calls", None) or []
             if not tool_calls:
+                # If the router said tools are required but the LLM forgot, retry once
+                # with a stronger instruction.
                 if intent == "TOOL_NEEDED" and not self.last_tool_calls and not force_retry_used:
                     force_retry_used = True
                     tool_policy_hint = self._forced_tool_hint()
@@ -276,6 +300,8 @@ class MovieAgent:
                     )
                     continue
 
+                # A search list is not enough for rating/genre facts. If the LLM searched
+                # but did not fetch full movie cards, nudge it to get details.
                 if intent == "TOOL_NEEDED" and self._needs_more_detail_calls() and not detail_retry_used:
                     detail_retry_used = True
                     tool_policy_hint = self._detail_tool_hint()
@@ -289,10 +315,14 @@ class MovieAgent:
                     )
                     continue
 
+                # No tool calls means the LLM produced the final answer.
                 final_answer = str(response.content)
+                final_answer = self._add_action_explanation(final_answer, intent)
                 self._save_turn(user_input, final_answer)
                 return final_answer
 
+            # The LLM asked for one or more tools. Save the request, run the tools,
+            # then put tool outputs into scratchpad for the next LLM round.
             scratchpad.append(response)
             self._run_tools(tool_calls, scratchpad)
 
@@ -300,6 +330,7 @@ class MovieAgent:
             "Я сделал несколько tool calls, но не успел собрать финальный ответ. "
             "Попробуйте сузить запрос: например, указать два фильма или один жанр."
         )
+        fallback = self._add_action_explanation(fallback, intent)
         self._save_turn(user_input, fallback)
         return fallback
 
@@ -328,6 +359,8 @@ class MovieAgent:
     ) -> AIMessage | BaseMessage:
         """Отправляет в LLM вопрос, память и результаты прошлых tool calls."""
 
+        # This dictionary fills the placeholders in chat_prompt:
+        # {summary}, {recent_messages}, {input}, and {agent_scratchpad}.
         return self.chain.invoke(
             {
                 "summary": self.summary or "Пока нет сохраненной памяти.",
@@ -342,6 +375,7 @@ class MovieAgent:
         """Запускает tools, которые попросила LLM, и кладет результаты в scratchpad."""
 
         for call in tool_calls:
+            # Each tool call has a function name and JSON-like arguments chosen by the LLM.
             tool_name = call["name"]
             tool_args = call.get("args", {})
             self.last_tool_calls.append({"name": tool_name, "args": tool_args})
@@ -357,6 +391,8 @@ class MovieAgent:
             )
 
     def _run_tool(self, tool_name: str, tool_args: dict[str, Any]) -> str:
+        """Find a tool by name and run it with the LLM-provided arguments."""
+
         tool = self.tools_by_name.get(tool_name)
         if tool is None:
             return f"Tool error: unknown tool '{tool_name}'."
@@ -405,6 +441,69 @@ class MovieAgent:
 
         return ""
 
+    def _add_action_explanation(self, answer: str, intent: str) -> str:
+        """Prepend visible reasoning: what the agent did, without hidden chain-of-thought.
+
+        For beginners and graders, this shows the practical agent workflow:
+        route request -> call tools -> filter/sort -> answer. It does not expose
+        private model reasoning; it only summarizes observable actions.
+        """
+
+        if answer.startswith("Что сделал:"):
+            return answer
+
+        steps = self._action_steps(intent)
+        if not steps:
+            return answer
+
+        explanation = "Что сделал:\n" + "\n".join(
+            f"{index}. {step}" for index, step in enumerate(steps, start=1)
+        )
+        return f"{explanation}\n\n{answer}"
+
+    def _action_steps(self, intent: str) -> list[str]:
+        """Turn router/tool history into short human-readable action steps."""
+
+        if intent == "MEMORY_ONLY":
+            return ["Определил, что это сообщение для памяти, и сохранил его без OMDb tools."]
+
+        if not self.last_tool_calls:
+            return ["Ответил без OMDb tools, потому что запрос не требовал проверяемых фактов."]
+
+        steps = []
+        for call in self.last_tool_calls:
+            step = self._tool_call_to_step(call)
+            if step and step not in steps:
+                steps.append(step)
+        return steps
+
+    @staticmethod
+    def _tool_call_to_step(call: dict[str, Any]) -> str:
+        """Explain one tool call in simple language."""
+
+        name = call["name"]
+        args = call.get("args", {})
+
+        if name == "search_movie_by_title":
+            return f"Проверил карточку фильма в OMDb: {args.get('title', 'название не указано')}."
+        if name == "search_movie_list":
+            return f"Нашел список фильмов в OMDb по запросу: {args.get('query', 'запрос не указан')}."
+        if name == "search_movie_by_imdb_id":
+            return f"Получил точную карточку фильма по IMDb ID: {args.get('imdb_id', 'ID не указан')}."
+        if name == "verify_candidate_movie_titles":
+            return "Проверил candidate titles через OMDb и оставил только подтвержденные карточки."
+        if name == "get_movie_details_batch":
+            return "Получил детальные карточки нескольких фильмов по IMDb ID."
+        if name == "filter_movies_by_genre":
+            return f"Отфильтровал фильмы по строгому жанру OMDb: {args.get('genre', 'жанр не указан')}."
+        if name == "filter_movies_by_min_rating":
+            rating = args.get("min_imdb_rating", "рейтинг не указан")
+            return f"Оставил только фильмы с IMDb rating не ниже {rating}."
+        if name == "sort_movies_by_imdb_rating":
+            return "Отсортировал подходящие фильмы по IMDb rating."
+
+        return f"Вызвал tool: {name}."
+
     @staticmethod
     def _forced_tool_hint() -> str:
         return (
@@ -425,6 +524,7 @@ class MovieAgent:
     def _classify_intent(self, user_input: str) -> str:
         """Просит маленький LLM router выбрать: запомнить, использовать tools или просто ответить."""
 
+        # This is still an LLM call, but its output must be one simple label.
         result = self.intent_chain.invoke(
             {
                 "summary": self.summary or "Пока нет сохраненной памяти.",
@@ -477,9 +577,13 @@ def create_movie_agent(settings: Settings | None = None) -> MovieAgent:
     """Build the LCEL chain and bind LangChain tools to an OpenAI chat model."""
 
     settings = settings or get_settings()
+
+    # Tools are normal Python functions. bind_tools tells the LLM their names,
+    # arguments, and descriptions so it can request them during a conversation.
     tools = build_movie_tools(settings.omdb_api_key)
     tools_by_name = {tool.name: tool for tool in tools}
 
+    # ChatOpenAI is the model wrapper. It sends prompts to the OpenAI API.
     llm = ChatOpenAI(
         model=settings.openai_model,
         openai_api_key=settings.openai_api_key,
@@ -487,6 +591,8 @@ def create_movie_agent(settings: Settings | None = None) -> MovieAgent:
     )
     llm_with_tools = llm.bind_tools(tools)
 
+    # Main prompt for answering the user. MessagesPlaceholder means "insert a list
+    # of messages here", useful for memory and tool results.
     chat_prompt = ChatPromptTemplate.from_messages(
         [
             ("system", SYSTEM_PROMPT),
@@ -496,6 +602,8 @@ def create_movie_agent(settings: Settings | None = None) -> MovieAgent:
             MessagesPlaceholder("agent_scratchpad"),
         ]
     )
+
+    # Separate prompts keep each job simple: one for memory, one for routing.
     summary_prompt = ChatPromptTemplate.from_messages(
         [
             ("system", SUMMARY_PROMPT),
@@ -507,6 +615,8 @@ def create_movie_agent(settings: Settings | None = None) -> MovieAgent:
         ]
     )
 
+    # LCEL uses the pipe operator: prompt | model.
+    # The prompt formats messages, then the model generates the next AIMessage.
     chain = chat_prompt | llm_with_tools
     summary_chain = summary_prompt | llm
     intent_chain = intent_prompt | llm

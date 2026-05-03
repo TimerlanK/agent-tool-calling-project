@@ -13,6 +13,12 @@ load_dotenv()
 
 @dataclass(frozen=True)
 class Settings:
+    """One place for all values that can change between computers.
+
+    In agent projects we usually keep secrets and model choices outside the code.
+    That way GitHub gets only safe placeholders, while your real `.env` stays local.
+    """
+
     omdb_api_key: str
     openai_api_key: str
     openai_model: str = "gpt-5.4-mini"
@@ -25,18 +31,21 @@ class Settings:
 def get_settings() -> Settings:
     """Create settings from the current environment."""
 
+    # OMDb is the movie database. The tools use this key when they need facts.
     omdb_api_key = os.getenv("OMDB_API_KEY", "").strip()
     if not omdb_api_key:
         raise RuntimeError(
             "OMDB_API_KEY is missing. Create .env from .env.example and add your OMDb key."
         )
 
+    # OpenAI is the LLM provider. The agent uses this key to decide and answer.
     openai_api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not openai_api_key:
         raise RuntimeError(
             "OPENAI_API_KEY is missing. Create .env from .env.example and add your OpenAI API key."
         )
 
+    # Every value below has a default, but can be overridden in `.env`.
     return Settings(
         omdb_api_key=omdb_api_key,
         openai_api_key=openai_api_key,

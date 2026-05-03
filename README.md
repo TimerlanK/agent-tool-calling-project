@@ -15,6 +15,7 @@
 - Фильтрация по минимальному IMDb rating через `filter_movies_by_min_rating`.
 - Сортировка по IMDb rating через `sort_movies_by_imdb_rating`.
 - Multi-tool calling: агент может вызвать 2, 3 и больше tools для одного запроса.
+- Visible reasoning: перед ответом агент кратко объясняет, какие действия сделал.
 - Tools созданы через `@tool`, используют `requests`, обрабатывают ошибки через `try-except` и возвращают читаемые строки.
 - Ручная summary buffer memory: старый диалог сжимается в summary, а последние сообщения хранятся полностью.
 
@@ -103,6 +104,10 @@ PYTHONPATH=src python3 -m kinomaniac.cli --trace --memory
 ```
 
 ## Примеры multi-tool запросов
+
+В ответах агент добавляет блок `Что сделал:`. Это не скрытая chain-of-thought,
+а короткое объяснение видимых действий: какой tool вызвал, какие фильтры применил,
+что отсортировал.
 
 ```text
 Сравни IMDb рейтинги Matrix и Inception.

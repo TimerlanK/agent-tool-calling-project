@@ -15,7 +15,10 @@ class OmdbError(RuntimeError):
 
 
 def _request(api_key: str, params: dict[str, Any]) -> dict[str, Any]:
+    """Send one HTTP request to OMDb and return parsed JSON."""
+
     try:
+        # OMDb uses query parameters like ?apikey=...&t=Inception.
         response = requests.get(
             OMDB_BASE_URL,
             params={"apikey": api_key, **params},
@@ -28,6 +31,8 @@ def _request(api_key: str, params: dict[str, Any]) -> dict[str, Any]:
     except ValueError as exc:
         raise OmdbError("OMDb returned invalid JSON.") from exc
 
+    # OMDb can return HTTP 200 even when the movie was not found.
+    # In that case the JSON contains {"Response": "False", "Error": "..."}.
     if data.get("Response") == "False":
         raise OmdbError(data.get("Error", "OMDb request failed."))
 
@@ -35,6 +40,8 @@ def _request(api_key: str, params: dict[str, Any]) -> dict[str, Any]:
 
 
 def _clean_movie(data: dict[str, Any]) -> dict[str, Any]:
+    """Keep only the fields our agent needs from OMDb's large response."""
+
     wanted_fields = [
         "Title",
         "Year",
@@ -68,6 +75,7 @@ def get_movie_by_title(
 ) -> dict[str, Any]:
     """Fetch one movie by exact or close title."""
 
+    # `t` means title search in OMDb. `plot` controls short vs full summary.
     params: dict[str, Any] = {"t": title, "plot": "full" if full_plot else "short"}
     if year:
         params["y"] = year
@@ -82,6 +90,7 @@ def get_movie_by_imdb_id(
 ) -> dict[str, Any]:
     """Fetch one movie by IMDb ID."""
 
+    # `i` is the OMDb parameter for an exact IMDb ID like tt1375666.
     params: dict[str, Any] = {"i": imdb_id, "plot": "full" if full_plot else "short"}
     return _clean_movie(_request(api_key, params))
 
@@ -95,6 +104,7 @@ def search_movies(
 ) -> dict[str, Any]:
     """Search OMDb by title text and return a list of lightweight matches."""
 
+    # `s` returns search results, but not full details. We fetch details later by IMDb ID.
     params: dict[str, Any] = {"s": query, "page": page}
     if year:
         params["y"] = year

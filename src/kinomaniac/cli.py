@@ -13,6 +13,8 @@ SEPARATOR_WIDTH = 72
 
 
 def main() -> None:
+    # The CLI is only a thin wrapper around MovieAgent. It lets you test the
+    # agent from the terminal without writing Python code.
     parser = argparse.ArgumentParser(description="Киноманьяк: movie-agent на OpenAI API + LangChain.")
     parser.add_argument("--trace", action="store_true", help="Печатать tool calls после каждого ответа.")
     parser.add_argument("--memory", action="store_true", help="Печатать summary buffer memory после каждого ответа.")
@@ -21,6 +23,8 @@ def main() -> None:
 
     agent = create_movie_agent()
 
+    # One-shot mode:
+    # PYTHONPATH=src python3 -m kinomaniac.cli "Сравни Matrix и Inception"
     if args.question:
         answer, elapsed_seconds = ask_with_timing(agent, " ".join(args.question))
         print(answer)
@@ -32,6 +36,8 @@ def main() -> None:
         print_turn_separator(1)
         return
 
+    # Interactive mode: keep asking questions until the user types exit/quit/q.
+    # This mode is best for testing memory because the same agent object stays alive.
     print("Киноманьяк готов. Напишите вопрос о кино или 'exit'.")
     turn_number = 1
     while True:
@@ -52,6 +58,8 @@ def main() -> None:
 
 
 def ask_with_timing(agent, question: str) -> tuple[str, float]:
+    """Run one question and measure how long the agent needed."""
+
     start_time = time.perf_counter()
     answer = agent.ask(question)
     return answer, time.perf_counter() - start_time
@@ -62,6 +70,11 @@ def print_execution_time(elapsed_seconds: float) -> None:
 
 
 def print_tool_trace(tool_calls: list[dict]) -> None:
+    """Show which tools the LLM decided to call.
+
+    This is useful for grading/debugging: it makes multi-tool reasoning visible.
+    """
+
     print("\nTool calls:")
     if not tool_calls:
         print("[]")
