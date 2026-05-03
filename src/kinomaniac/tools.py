@@ -6,10 +6,11 @@ from typing import Annotated, Literal
 
 from langchain_core.tools import tool
 
-from kinomaniac.omdb import OmdbError, get_movie_by_title, imdb_rating_as_float, search_movies
+from kinomaniac.omdb import OmdbError, get_movie_by_imdb_id, get_movie_by_title, search_movies
 
 
 MovieType = Literal["movie", "series", "episode"]
+MOVIE_SEPARATOR = "\n\n--- MOVIE ---\n\n"
 
 
 def _movie_to_text(movie: dict) -> str:
@@ -49,6 +50,27 @@ def _movie_list_to_text(result: dict) -> str:
             f"type: {movie.get('Type', 'Unknown')}, IMDb ID: {movie.get('imdbID', 'Unknown')}"
         )
     return "\n".join(lines)
+
+
+def _split_movie_blocks(movie_details: str) -> list[str]:
+    blocks = [block.strip() for block in movie_details.split("--- MOVIE ---")]
+    return [block for block in blocks if block]
+
+
+def _field_from_block(block: str, field_name: str) -> str:
+    prefix = f"{field_name}:"
+    for line in block.splitlines():
+        if line.startswith(prefix):
+            return line.removeprefix(prefix).strip()
+    return ""
+
+
+def _imdb_rating_from_block(block: str) -> float:
+    rating = _field_from_block(block, "IMDb rating")
+    try:
+        return float(rating)
+    except ValueError:
+        return 0.0
 
 
 def build_movie_tools(api_key: str):
@@ -103,147 +125,140 @@ def build_movie_tools(api_key: str):
             return f"Could not search movies for '{query}'. OMDb error: {exc}"
 
     @tool
-    def compare_two_movies(
-        first_title: Annotated[str, "First movie title."],
-        second_title: Annotated[str, "Second movie title."],
-        first_year: Annotated[str | None, "Optional release year for the first movie."] = None,
-        second_year: Annotated[str | None, "Optional release year for the second movie."] = None,
+    def search_movie_by_imdb_id(
+        imdb_id: Annotated[str, "IMDb ID from OMDb search results, for example 'tt1375666'."],
+        full_plot: Annotated[bool, "Set true when the user asks for a detailed plot."] = False,
     ) -> str:
-        """Compare two movies using verified OMDb data.
+        """Search one movie by IMDb ID and return readable verified facts from OMDb.
 
         Args:
-            first_title: First movie title.
-            second_title: Second movie title.
-            first_year: Optional release year for the first movie.
-            second_year: Optional release year for the second movie.
+            imdb_id: IMDb ID from search_movie_list results.
+            full_plot: Use true when the user asks for a detailed plot.
 
         Returns:
-            A readable comparison with IMDb ratings, genres, years, directors, actors, awards, and the higher-rated movie.
+            A readable text summary with title, year, genre, director, actors, plot, awards, and IMDb rating.
         """
 
         try:
-            first = get_movie_by_title(api_key, first_title, year=first_year)
-            second = get_movie_by_title(api_key, second_title, year=second_year)
+            movie = get_movie_by_imdb_id(api_key, imdb_id=imdb_id, full_plot=full_plot)
+            return _movie_to_text(movie)
         except OmdbError as exc:
-            return f"Could not compare '{first_title}' and '{second_title}'. OMDb error: {exc}"
+            return f"Could not find movie with IMDb ID '{imdb_id}'. OMDb error: {exc}"
 
-        first_rating = imdb_rating_as_float(first)
-        second_rating = imdb_rating_as_float(second)
-        if first_rating > second_rating:
-            higher_rated = first.get("Title", first_title)
-        elif second_rating > first_rating:
-            higher_rated = second.get("Title", second_title)
-        else:
-            higher_rated = "tie"
+    @tool
+    def get_movie_details_batch(
+        imdb_ids: Annotated[str, "Comma-separated IMDb IDs from search_movie_list, for example 'tt0372784,tt1877830'."],
+        limit: Annotated[int, "Maximum number of IMDb IDs to fetch."] = 5,
+    ) -> str:
+        """Fetch detailed OMDb cards for several movies by IMDb ID.
 
-        return (
-            "Movie comparison:\n\n"
-            f"First movie:\n{_movie_to_text(first)}\n\n"
-            f"Second movie:\n{_movie_to_text(second)}\n\n"
-            f"Higher IMDb rating: {higher_rated}\n"
-            f"Rating difference: {round(abs(first_rating - second_rating), 1)}"
-        )
+        Args:
+            imdb_ids: Comma-separated IMDb IDs from search_movie_list.
+            limit: Maximum number of movie details to fetch.
+
+        Returns:
+            Readable movie detail cards separated by --- MOVIE ---.
+        """
+
+        ids = []
+        for raw_id in imdb_ids.replace("\n", ",").split(","):
+            imdb_id = raw_id.strip()
+            if imdb_id and imdb_id not in ids:
+                ids.append(imdb_id)
+
+        if not ids:
+            return "No IMDb IDs were provided."
+
+        movie_blocks = []
+        for imdb_id in ids[:limit]:
+            try:
+                movie = get_movie_by_imdb_id(api_key, imdb_id=imdb_id)
+            except OmdbError as exc:
+                movie_blocks.append(f"IMDb ID: {imdb_id}\nError: {exc}")
+                continue
+            movie_blocks.append(_movie_to_text(movie))
+
+        return MOVIE_SEPARATOR.join(movie_blocks)
 
     @tool
     def filter_movies_by_genre(
-        query: Annotated[str, "Broad title search query, for example a franchise or title fragment."],
-        genre: Annotated[str, "Required genre to keep, for example 'Comedy' or 'Thriller'."],
-        min_imdb_rating: Annotated[float, "Minimum IMDb rating from 0 to 10."] = 0.0,
-        limit: Annotated[int, "Maximum number of detailed movies to inspect."] = 5,
+        movie_details: Annotated[str, "Movie detail cards from get_movie_details_batch or search_movie_by_title."],
+        genre: Annotated[str, "Required genre, for example 'Thriller', 'Comedy', or 'Sci-Fi'."],
     ) -> str:
-        """Find movies by title search, then keep only movies matching a genre and minimum IMDb rating.
+        """Keep only movie detail cards whose OMDb Genre field contains the requested genre.
 
         Args:
-            query: Broad title search query, for example a franchise or title fragment.
-            genre: Required genre, for example "Comedy" or "Thriller".
-            min_imdb_rating: Minimum IMDb rating from 0 to 10.
-            limit: Maximum number of detailed movies to inspect.
+            movie_details: Readable movie detail cards.
+            genre: Required genre to keep.
 
         Returns:
-            A readable list of matching movies with genre, rating, year, and director.
+            Only the movie cards that match the genre, or a readable no-match message.
         """
 
-        try:
-            found = search_movies(api_key, query=query, movie_type="movie")
-        except OmdbError as exc:
-            return f"Could not search movies for '{query}'. OMDb error: {exc}"
-
         matches = []
-        for item in found.get("results", [])[:limit]:
-            try:
-                details = get_movie_by_title(api_key, item["Title"], year=item.get("Year"))
-            except OmdbError:
-                continue
-
-            genres = details.get("Genre", "").lower()
-            if genre.lower() in genres and imdb_rating_as_float(details) >= min_imdb_rating:
-                matches.append(details)
+        for block in _split_movie_blocks(movie_details):
+            genres = _field_from_block(block, "Genre").lower()
+            if genre.lower() in genres:
+                matches.append(block)
 
         if not matches:
-            return (
-                f"No movies found for query '{query}' with genre '{genre}' "
-                f"and IMDb rating >= {min_imdb_rating}."
-            )
+            return f"No movies matched genre '{genre}'."
 
-        lines = [
-            f"Movies for '{query}' with genre '{genre}' and IMDb rating >= {min_imdb_rating}:"
-        ]
-        for index, movie in enumerate(matches, start=1):
-            lines.append(
-                f"{index}. {movie.get('Title')} ({movie.get('Year')}) - "
-                f"IMDb {movie.get('imdbRating')}, genre: {movie.get('Genre')}, "
-                f"director: {movie.get('Director')}"
-            )
-        return "\n".join(lines)
+        return MOVIE_SEPARATOR.join(matches)
 
     @tool
-    def find_movies_by_min_rating(
-        query: Annotated[str, "Search phrase, franchise, or title fragment."],
+    def filter_movies_by_min_rating(
+        movie_details: Annotated[str, "Movie detail cards from get_movie_details_batch or another filter tool."],
         min_imdb_rating: Annotated[float, "Minimum IMDb rating from 0 to 10."],
-        limit: Annotated[int, "Maximum number of detailed movies to inspect."] = 5,
     ) -> str:
-        """Find movies by title search and keep only movies with IMDb rating above the requested minimum.
+        """Keep only movie detail cards whose IMDb rating is at least the requested minimum.
 
         Args:
-            query: Search phrase, franchise, or title fragment.
+            movie_details: Readable movie detail cards.
             min_imdb_rating: Minimum IMDb rating from 0 to 10.
-            limit: Maximum number of detailed movies to inspect.
 
         Returns:
-            A readable list of matching movies sorted by IMDb rating.
+            Only the movie cards that pass the rating filter, or a readable no-match message.
         """
 
-        try:
-            found = search_movies(api_key, query=query, movie_type="movie")
-        except OmdbError as exc:
-            return f"Could not search movies for '{query}'. OMDb error: {exc}"
-
         matches = []
-        for item in found.get("results", [])[:limit]:
-            try:
-                details = get_movie_by_title(api_key, item["Title"], year=item.get("Year"))
-            except OmdbError:
-                continue
-            if imdb_rating_as_float(details) >= min_imdb_rating:
-                matches.append(details)
+        for block in _split_movie_blocks(movie_details):
+            if _imdb_rating_from_block(block) >= min_imdb_rating:
+                matches.append(block)
 
-        matches.sort(key=imdb_rating_as_float, reverse=True)
         if not matches:
-            return f"No movies found for query '{query}' with IMDb rating >= {min_imdb_rating}."
+            return f"No movies matched IMDb rating >= {min_imdb_rating}."
 
-        lines = [f"Movies for '{query}' with IMDb rating >= {min_imdb_rating}:"]
-        for index, movie in enumerate(matches, start=1):
-            lines.append(
-                f"{index}. {movie.get('Title')} ({movie.get('Year')}) - "
-                f"IMDb {movie.get('imdbRating')}, genre: {movie.get('Genre')}, "
-                f"director: {movie.get('Director')}"
-            )
-        return "\n".join(lines)
+        return MOVIE_SEPARATOR.join(matches)
+
+    @tool
+    def sort_movies_by_imdb_rating(
+        movie_details: Annotated[str, "Movie detail cards from get_movie_details_batch or filter tools."],
+        descending: Annotated[bool, "True for best-to-worst, false for worst-to-best."] = True,
+    ) -> str:
+        """Sort movie detail cards by IMDb rating.
+
+        Args:
+            movie_details: Readable movie detail cards.
+            descending: True sorts highest rating first.
+
+        Returns:
+            Movie detail cards sorted by IMDb rating.
+        """
+
+        blocks = _split_movie_blocks(movie_details)
+        if not blocks:
+            return "No movie details were provided for sorting."
+
+        sorted_blocks = sorted(blocks, key=_imdb_rating_from_block, reverse=descending)
+        return MOVIE_SEPARATOR.join(sorted_blocks)
 
     return [
         search_movie_by_title,
         search_movie_list,
-        compare_two_movies,
+        search_movie_by_imdb_id,
+        get_movie_details_batch,
         filter_movies_by_genre,
-        find_movies_by_min_rating,
+        filter_movies_by_min_rating,
+        sort_movies_by_imdb_rating,
     ]

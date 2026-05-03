@@ -75,6 +75,17 @@ def get_movie_by_title(
     return _clean_movie(_request(api_key, params))
 
 
+def get_movie_by_imdb_id(
+    api_key: str,
+    imdb_id: str,
+    full_plot: bool = False,
+) -> dict[str, Any]:
+    """Fetch one movie by IMDb ID."""
+
+    params: dict[str, Any] = {"i": imdb_id, "plot": "full" if full_plot else "short"}
+    return _clean_movie(_request(api_key, params))
+
+
 def search_movies(
     api_key: str,
     query: str,
@@ -96,12 +107,3 @@ def search_movies(
         "total_results": data.get("totalResults"),
         "results": data.get("Search", []),
     }
-
-
-def imdb_rating_as_float(movie: dict[str, Any]) -> float:
-    """Convert OMDb's imdbRating field to a float, or 0.0 when unavailable."""
-
-    try:
-        return float(movie.get("imdbRating", 0))
-    except (TypeError, ValueError):
-        return 0.0

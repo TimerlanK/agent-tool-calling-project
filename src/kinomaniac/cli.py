@@ -12,10 +12,10 @@ SEPARATOR_WIDTH = 72
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Kinomaniac: local movie agent on Ollama + LangChain.")
-    parser.add_argument("--trace", action="store_true", help="Print tool calls after each answer.")
-    parser.add_argument("--memory", action="store_true", help="Print summary buffer memory after each answer.")
-    parser.add_argument("question", nargs="*", help="Movie question. If omitted, starts an interactive chat.")
+    parser = argparse.ArgumentParser(description="Киноманьяк: локальный movie-agent на Ollama + LangChain.")
+    parser.add_argument("--trace", action="store_true", help="Печатать tool calls после каждого ответа.")
+    parser.add_argument("--memory", action="store_true", help="Печатать summary buffer memory после каждого ответа.")
+    parser.add_argument("question", nargs="*", help="Вопрос о кино. Если не указан, запускается интерактивный чат.")
     args = parser.parse_args()
 
     agent = create_movie_agent()
@@ -29,15 +29,15 @@ def main() -> None:
         print_turn_separator(1)
         return
 
-    print("Kinomaniac is ready. Ask a movie question or type 'exit'.")
+    print("Киноманьяк готов. Напишите вопрос о кино или 'exit'.")
     turn_number = 1
     while True:
-        user_input = input(f"\nTurn {turn_number} - You: ").strip()
+        user_input = input(f"\nВопрос {turn_number} - Вы: ").strip()
         if user_input.lower() in {"exit", "quit", "q"}:
             break
         if not user_input:
             continue
-        print(f"\nKinomaniac: {agent.ask(user_input)}")
+        print(f"\nКиноманьяк: {agent.ask(user_input)}")
         if args.trace:
             print_tool_trace(agent.last_tool_calls)
         if args.memory:
@@ -55,7 +55,7 @@ def print_tool_trace(tool_calls: list[dict]) -> None:
 
 
 def print_turn_separator(turn_number: int) -> None:
-    label = f" END OF TURN {turn_number} "
+    label = f" КОНЕЦ ВОПРОСА {turn_number} "
     side_width = max((SEPARATOR_WIDTH - len(label)) // 2, 1)
     line = f"{'=' * side_width}{label}{'=' * side_width}"
     print(f"\n{line}\n")
